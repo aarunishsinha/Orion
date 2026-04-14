@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mcp_server:
+    build: servers/google_calendar
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      # Required for local oauth callback
+      - OAUTHLIB_INSECURE_TRANSPORT=1
+    volumes:
+      - ./servers/google_calendar:/app
+      - ./servers/google_calendar/logs:/app/logs
+    command: uvicorn src.mcp_server:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - redis
+
+  worker:
+    build: servers/google_calendar
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - OAUTHLIB_INSECURE_TRANSPORT=1
+    volumes:
+      - ./servers/google_calendar:/app
+      - ./servers/google_calendar/logs:/app/logs
+    command: arq src.redis_worker.WorkerSettings
+    depends_on:
+      - redis
