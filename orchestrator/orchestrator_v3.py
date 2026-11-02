@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 import logging
 import threading
@@ -55,11 +56,11 @@ def _check_ollama_health() -> bool:
         return False
 
 
-def query_llm(user_text: str) -> str:
+def query_llm(user_text: str) -> tuple[str, dict]:
     """
     Send the user's transcript to Qwen2.5-3B via Ollama and return the
-    assistant's response. Maintains rolling conversation history for
-    multi-turn context.
+    assistant's response plus Ollama's timing stats (empty on failure).
+    Maintains rolling conversation history for multi-turn context.
     """
     conversation_history.append({"role": "user", "content": user_text})
     _trim_history()
@@ -91,29 +92,59 @@ def query_llm(user_text: str) -> str:
         conversation_history.append({"role": "assistant", "content": assistant_msg})
         _trim_history()
 
+        # Ollama reports durations in nanoseconds
+        stats = {k: result.get(k) for k in (
+            "total_duration", "load_duration",
+            "prompt_eval_count", "prompt_eval_duration",
+            "eval_count", "eval_duration",
+        )}
+
         logger.info(f"LLM response ({len(assistant_msg)} chars): {assistant_msg[:120]}...")
-        return assistant_msg
+        return assistant_msg, stats
 
     except requests.ConnectionError:
         logger.error("Ollama is not running — cannot reach %s", OLLAMA_BASE_URL)
-        return "I can't reach my language model right now. Is Ollama running?"
+        return "I can't reach my language model right now. Is Ollama running?", {}
     except requests.Timeout:
         logger.error("Ollama request timed out after %ds", OLLAMA_TIMEOUT)
-        return "Sorry, I took too long to think. Please try again."
+        return "Sorry, I took too long to think. Please try again.", {}
     except requests.HTTPError as e:
         logger.error("Ollama HTTP error: %s", e)
-        return "Something went wrong with the language model."
+        return "Something went wrong with the language model.", {}
     except (KeyError, ValueError) as e:
         logger.error("Failed to parse Ollama response: %s", e)
-        return "I received a garbled response. Please try again."
+        return "I received a garbled response. Please try again.", {}
+
+
+# ---------------------------------------------------------------------------
+# Latency benchmark (ORION_BENCH=1)
+# ---------------------------------------------------------------------------
+# When enabled, conversation history is cleared before every turn so runs are
+# comparable, and per-stage timings are appended to logs/latency.jsonl.
+BENCH_MODE = os.environ.get("ORION_BENCH") == "1"
+LATENCY_LOG = os.path.abspath(os.path.join(os.path.dirname(__file__), "../logs/latency.jsonl"))
+_bench_turn = 0
+
+
+def _record_latency(record: dict):
+    global _bench_turn
+    _bench_turn += 1
+    record = {"ts": time.time(), "pid": os.getpid(), "turn": _bench_turn, **record}
+    os.makedirs(os.path.dirname(LATENCY_LOG), exist_ok=True)
+    with open(LATENCY_LOG, "a") as f:
+        f.write(json.dumps(record) + "\n")
+    logger.info("Latency: stt=%.3fs llm=%.3fs tts=%.3fs total=%.3fs",
+                record["stt_s"], record["llm_s"], record["tts_s"], record["total_s"])
 
 
 
 # ---------------------------------------------------------------------------
 # Redis Connection
 # ---------------------------------------------------------------------------
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6380"))  # docker-compose maps Redis to host 6380
+
 try:
-    redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    redis_client = redis.Redis(host='localhost', port=REDIS_PORT, decode_responses=True)
     redis_client.ping() # Force the lazy socket to evaluate
 except Exception as e:
     logger.error(f"Failed to connect to Redis (Running in offline mode): {e}")
@@ -163,8 +194,10 @@ def orchestrator_daemon(action_queue: Queue, display_queue: Queue,
         elif action == HotkeyAction.STOP_RECORDING:
             # Show transcribing state while whisper-cli processes
             display_queue.put({"state": "REASONING", "text": "Transcribing..."})
+            t_stt = time.perf_counter()
             text = audio_engine.stop_recording_and_transcribe()
-            
+            stt_s = time.perf_counter() - t_stt
+
             if not text:
                 display_queue.put({"state": "IDLE"})
                 if redis_client:
@@ -174,15 +207,27 @@ def orchestrator_daemon(action_queue: Queue, display_queue: Queue,
             # Show transcript so user can read it
             logger.info(f"Dispatching to LLM: '{text}'")
             display_queue.put({"state": "REASONING", "text": f"Orion heard: '{text}'"})
-            time.sleep(2)
-            
-            # Real LLM call via Ollama
-            display_queue.put({"state": "REASONING", "text": "Thinking..."})
-            response = query_llm(text)
+
+            # Real LLM call via Ollama (transcript stays visible while it runs)
+            if BENCH_MODE:
+                conversation_history.clear()
+            t_llm = time.perf_counter()
+            response, llm_stats = query_llm(text)
+            llm_s = time.perf_counter() - t_llm
 
             # TTS: generate audio, measure duration, sync typing to speech
             try:
-                duration, playback = tts_engine.speak(response)
+                t_tts = time.perf_counter()
+                duration, playback = tts_engine.speak(response)  # returns once playback has started
+                tts_s = time.perf_counter() - t_tts
+                if BENCH_MODE:
+                    _record_latency({
+                        "audio_s": audio_engine.last_audio_seconds,
+                        "stt_s": stt_s, "llm_s": llm_s, "tts_s": tts_s,
+                        "total_s": time.perf_counter() - t_stt,
+                        "transcript": text, "response_chars": len(response),
+                        "llm_ok": bool(llm_stats), **llm_stats,
+                    })
                 char_delay = (duration / max(len(response), 1)) * 1000  # ms per char
                 display_queue.put({
                     "state": "SPEAKING",
@@ -206,7 +251,9 @@ def orchestrator_daemon(action_queue: Queue, display_queue: Queue,
             audio_engine.stop_recording_and_transcribe() # Flush
             tts_engine.cancel()                          # Stop any speech
             if redis_client:
-                redis_client.flushall() # Specific panic switch requirement
+                # Panic switch: clear only Orion's keys — Redis is shared with the calendar stack
+                for key in redis_client.scan_iter(match="orion:*"):
+                    redis_client.delete(key)
                 redis_client.set("orion:status:busy", "false")
             display_queue.put({"state": "IDLE"})
 

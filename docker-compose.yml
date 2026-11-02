@@ -4,7 +4,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Host port 6380 avoids clashing with other local Redis instances on 6379
+      - "6380:6379"
 
   mcp_server:
     build: servers/google_calendar

@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mcp_server")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
 # We will hold a global reference to the arq redis pool
 redis_pool = None
 

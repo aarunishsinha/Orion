@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger("redis_worker")
 
 # Worker needs to know about Redis
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
 
 async def _get_service():
     """Helper to initialize the calendar service."""

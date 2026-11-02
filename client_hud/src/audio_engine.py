@@ -20,7 +20,8 @@ class AudioEngine:
         self.p = pyaudio.PyAudio()
         self.audio_queue = queue.Queue()
         self.stream = None
-        
+        self.last_audio_seconds = 0.0  # length of the most recent utterance (for latency benchmarks)
+
         # Homebrew whisper-cli (pre-compiled native Intel binary)
         self.whisper_bin = "/usr/local/bin/whisper-cli"
         self.model_path = "/Users/aarunishsinha/Library/Application Support/pywhispercpp/models/ggml-base.en.bin"
@@ -71,7 +72,8 @@ class AudioEngine:
             return ""
 
         raw_data = b"".join(frames)
-        
+        self.last_audio_seconds = len(raw_data) / (self.RATE * self.CHANNELS * self.p.get_sample_size(self.FORMAT))
+
         # Write to a seekable temp file (auto-deleted when closed)
         # whisper-cli requires seek() on WAV headers — pipes don't support this
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:

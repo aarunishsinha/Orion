@@ -226,7 +226,7 @@ sequenceDiagram
 
 | Variable | Default | Description |
 |---|---|---|
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string for ARQ + token storage + rate limiting |
+| `REDIS_URL` | `redis://localhost:6380/0` | Redis connection string for ARQ + token storage + rate limiting |
 | `PYTHONPATH` | `/app/src` (in Docker) | Module resolution path |
 | `PYTHONUNBUFFERED` | `1` (in Docker) | Force unbuffered stdout for log streaming |
 

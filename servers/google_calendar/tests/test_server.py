@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from src.mcp_server import app, mcp
 
@@ -20,18 +20,16 @@ def test_mcp_tools_registered():
 # The rate limiter should be testable directly
 @pytest.mark.asyncio
 async def test_rate_limiter():
-    with patch("src.rate_limiter.redis_client.pipeline") as mock_pipeline_func:
-        mock_pipeline = mock_pipeline_func.return_value.__aenter__.return_value
-        
+    with patch("src.rate_limiter._sliding_window", new_callable=AsyncMock) as mock_script:
         # Simulate not exceeding quota yet
-        mock_pipeline.execute.return_value = [None, 5]  # count is 5
-        
+        mock_script.return_value = [5, 1]  # count is 5, admitted
+
         from src.rate_limiter import check_rate_limit
         res = await check_rate_limit("test")
         assert res is True
 
         # Simulate exceeding quota
-        mock_pipeline.execute.return_value = [None, 15]  # count is 15
+        mock_script.return_value = [10, 0]  # count is 10, rejected
         with pytest.raises(Exception, match="Rate limit exceeded"):
             await check_rate_limit("test")
 

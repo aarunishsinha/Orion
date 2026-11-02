@@ -14,7 +14,7 @@ logger = logging.getLogger("credentials_manager")
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380/0")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']

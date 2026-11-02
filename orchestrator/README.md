@@ -114,10 +114,12 @@ sequenceDiagram
    ollama pull qwen2.5:3b
    ```
 
-2. **Redis** (optional, for busy-lock):
+2. **Redis** (optional, for busy-lock) — the orchestrator connects to `localhost:6380`,
+   the host port `docker-compose.yml` maps Redis to:
    ```bash
-   brew services start redis
+   docker compose up -d redis
    ```
+   To use a Homebrew Redis on the default port instead, set `REDIS_PORT=6379`.
 
 ---
 
